@@ -1,2 +1,18 @@
 # agent-templates
-Collection of reusable Agent templates for Kimi / Claude Code. Includes architecture mapping agent, parallel workflow agent, mother-child sharding agent.
+## 项目概述
+一套适配 **Claude Code / Kimi** 的标准化可复用AI Agent协作模板仓库，面向软件研发全流程（需求、架构、并行开发、分片拆解、测试交付）。
+所有Agent遵循统一规范：分层文件结构、标准化入参/产物、明确职责隔离、内置异常捕获机制，可直接导入调度引擎或在Claude Code工作台加载使用。
+
+### 核心解决痛点
+1. 多AI角色协作边界混乱，并行/分片场景无统一调度规则
+2. LLM执行流程无固定约束，易出现步骤遗漏、越权修改文件、幻觉流程
+3. 缺少标准化结构化配置，难以对接自研自动化Harness调度引擎
+4. 无统一异常、报错产物规范，任务失败无法追溯分片/执行节点
+
+## 仓库目录与三大Agent模块
+> 💡规范说明：每个Agent目录标准为4文件结构；`archmap_agent` 当前迭代中，后续补齐剩余文件。
+每个Agent目录统一4文件标准结构：
+- `xxx_agent_config.json`：机器可读结构化配置（入参Schema、工作流、输出产物）
+- `xxx_agent_rules.md`：业务运行规则（场景、边界、依赖、风险约束）
+- `xxx_agent_system_prompt.md`：LLM执行系统提示词
+- `README.md`：单模块使用说明
