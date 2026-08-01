@@ -70,3 +70,6 @@ PM 输入需求 + 架构文件，Agent 自动判定任务依赖关系；
 无依赖 → parallel_task_agent 同步启动前后端测试；
 存在分层依赖 → split_mother_agent 分片串行执行，无依赖分片局部并行；
 全部子任务完成后输出统一校验报告，交付 PM 验收。
+
+## License
+This project is open source under the MIT License. See the [LICENSE](./LICENSE) file for details.
