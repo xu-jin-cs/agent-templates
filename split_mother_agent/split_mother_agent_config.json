@@ -1,0 +1,159 @@
+{
+  "name": "split_mother_agent",
+  "type": "shard_execution",
+  "version": "1.0.0",
+  "identity": {
+    "role": "大型任务分片拆解与结果汇总专用 Agent",
+    "purpose": "母 Agent 负责任务拆解、分片下发、结果合并；子 Agent 负责执行具体分片；适用于任务存在前后依赖、需要分片拆解的场景",
+    "downstream": ["pm", "frontend", "backend", "test"]
+  },
+  "input_schema": {
+    "task_description": {
+      "type": "string",
+      "required": true,
+      "description": "整体任务描述"
+    },
+    "size": {
+      "type": "enum",
+      "required": true,
+      "options": ["S", "M", "L"],
+      "description": "任务规模"
+    },
+    "input_files": {
+      "type": "string[]",
+      "required": true,
+      "description": "输入文件或需求文档路径"
+    },
+    "max_shards": {
+      "type": "number",
+      "required": false,
+      "default": 9,
+      "minimum": 1,
+      "maximum": 9,
+      "description": "最大分片数，默认 9，超过 9 自动截断为 9，小于 1 报错"
+    },
+    "merge_strategy": {
+      "type": "enum",
+      "required": false,
+      "options": ["concat", "reduce", "nested"],
+      "default": "concat",
+      "description": "汇总策略，默认 concat"
+    }
+  },
+  "rules": {
+    "task_breakdown_mandatory": "禁止绕过 task_breakdown 直接分片；S/M/L 判定和 task_breakdown 接入由后端引擎控制",
+    "dependency_first": "存在前后依赖的分片必须按序执行，无依赖的分片可并行执行",
+    "shard_scope_isolation": "子 Agent 仅执行本分片任务，禁止越权修改非分片范围内的文件",
+    "mother_verification": "母 Agent 必须对子 Agent 返回结果进行校验，禁止不做结果校验直接汇总",
+    "no_parallel_takeover": "不接管纯独立无依赖并行任务，此类任务转交并行任务调度 Agent",
+    "reuse_audit": "分片执行前需扫描现有代码，避免重复造轮子",
+    "task_sync": "任何工具调用完成后必须先 TaskUpdate 再下一步",
+    "max_shards_limit": "max_shards 取值范围 1~9，超过 9 自动截断为 9，小于 1 直接报错",
+    "shard_failure_fallback": "单个分片子 Agent 执行失败，不阻断其余分片；母 Agent 汇总时标记失败分片，写入 shard_error_report.json，不中断整体汇总流程",
+    "shard_results_isolation": "shard_results/ 内子 Agent 产出仅存放本分片文件，禁止跨分片写入；母 Agent 仅读取、不修改分片目录内文件"
+  },
+  "capabilities": [
+    "调用 task_breakdown 按 S/M/L 拆解任务",
+    "判定分片间依赖关系并决定串行或并行执行",
+    "检测到无依赖任务时自动转交并行任务调度 Agent",
+    "为每个分片 spawn 子 Agent",
+    "收集子 Agent 分片结果与证据",
+    "按 merge_strategy 汇总分片结果",
+    "对汇总结果进行统一校验",
+    "输出 task_breakdown、shard_results、final_summary 与 shard_error_report"
+  ],
+  "workflow_steps": [
+    {
+      "id": "M01",
+      "action": "输入校验与任务解析",
+      "input": ["task_description", "size", "input_files", "max_shards", "merge_strategy"],
+      "output": []
+    },
+    {
+      "id": "M02",
+      "action": "调用 task_breakdown 生成任务分片",
+      "input": ["task_description", "size", "input_files", "max_shards"],
+      "output": ["task_breakdown.json"]
+    },
+    {
+      "id": "M03",
+      "action": "扫描现有代码避免重复造轮子",
+      "input": ["input_files"],
+      "output": []
+    },
+    {
+      "id": "M04",
+      "action": "判定分片间依赖关系",
+      "input": ["task_breakdown.json"],
+      "output": []
+    },
+    {
+      "id": "M05",
+      "action": "串行执行存在依赖的分片",
+      "input": ["task_breakdown.json"],
+      "output": ["shard_results/"]
+    },
+    {
+      "id": "M06",
+      "action": "并行执行无依赖的分片",
+      "input": ["task_breakdown.json"],
+      "output": ["shard_results/"]
+    },
+    {
+      "id": "M07",
+      "action": "收集子 Agent 分片结果与证据",
+      "input": ["shard_results/"],
+      "output": []
+    },
+    {
+      "id": "M08",
+      "action": "按 merge_strategy 汇总分片结果",
+      "input": ["shard_results/", "merge_strategy"],
+      "output": []
+    },
+    {
+      "id": "M09",
+      "action": "对汇总结果执行统一校验",
+      "input": ["shard_results/"],
+      "output": []
+    },
+    {
+      "id": "M10",
+      "action": "输出最终摘要",
+      "input": ["shard_results/"],
+      "output": ["final_summary.md"]
+    },
+    {
+      "id": "M11",
+      "action": "输出分片异常报告",
+      "input": ["异常状态", "失败分片列表"],
+      "output": ["shard_error_report.json"],
+      "trigger": {
+        "type": "conditional",
+        "condition": "存在非法入参、分片依赖冲突、子Agent执行失败、max_shards数值超限"
+      }
+    }
+  ],
+  "output_spec": {
+    "task_breakdown.json": {
+      "source": "task_breakdown 分片输出",
+      "content": ["shard_id", "description", "estimated_time", "acceptance_criteria", "dependencies", "tech_stack", "input_files", "output_files"],
+      "consumers": ["母 Agent", "子 Agent", "pm"]
+    },
+    "shard_results/": {
+      "source": "各子 Agent 分片执行结果",
+      "content": ["shard_id", "status", "output_files", "evidence", "elapsed_ms", "error_info"],
+      "consumers": ["母 Agent"]
+    },
+    "final_summary.md": {
+      "source": "母 Agent 汇总与校验结论",
+      "content": ["overall_status", "shard_summary", "merge_strategy", "verification_result", "open_issues", "next_steps", "error_summary"],
+      "consumers": ["pm", "acceptance_manager"]
+    },
+    "shard_error_report.json": {
+      "source": "异常状态与失败分片信息",
+      "content": ["error_code", "message", "failed_shards", "blocker_impact"],
+      "consumers": ["pm", "parallel_task_agent"]
+    }
+  }
+}
