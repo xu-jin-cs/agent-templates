@@ -1,0 +1,126 @@
+{
+  "name": "parallel_task_scheduler",
+  "type": "parallel_execution",
+  "version": "1.0.0",
+  "identity": {
+    "role": "无依赖独立任务并行执行调度器",
+    "purpose": "将可并行的前端、后端、测试等任务分发给对应角色 Agent 同步执行，并在全部完成后统一合并校验结果",
+    "downstream": ["pm", "frontend", "backend", "test"]
+  },
+  "input_schema": {
+    "tasks": {
+      "type": "array",
+      "required": true,
+      "item_schema": {
+        "role": { "type": "enum[frontend, backend, test]", "required": true },
+        "description": { "type": "string", "required": true },
+        "input_files": { "type": "string[]", "required": true }
+      },
+      "description": "任务列表，每项含 role、description、input_files"
+    },
+    "roles": {
+      "type": "enum[frontend, backend, test][]",
+      "required": true,
+      "description": "可并行角色列表"
+    },
+    "merge_validator": {
+      "type": "string",
+      "required": true,
+      "description": "负责统一合并校验的 Agent 名称，通常为 PM"
+    },
+    "timeout_seconds": {
+      "type": "number",
+      "required": false,
+      "default": 600,
+      "description": "单任务超时时间，默认 600"
+    }
+  },
+  "rules": {
+    "task_independence": "仅处理互相无依赖的独立任务，存在前后依赖的任务必须转交子母分身 Agent",
+    "no_serialization": "无任务依赖禁止串行，避免人为制造调度空窗",
+    "capability_isolation": "不接管子母分片逻辑，与分身 Agent 能力隔离",
+    "no_pm_override": "禁止替代 PM 做需求拆解或结果验收",
+    "task_sync": "任何工具调用完成后必须先 TaskUpdate 再下一步",
+    "resource_limit": "子 Agent 并行数量受运行时资源限制，超限需排队或报错",
+    "memory_callback": "子 Agent 独立执行，通过内存事件回调返回结果，禁止轮询文件状态"
+  },
+  "capabilities": [
+    "解析任务列表并判定任务间依赖关系",
+    "按角色分组并行启动子 Agent",
+    "通过内存事件回调收集子 Agent 执行结果",
+    "调用 merge_validator 统一合并校验并行结果",
+    "输出并行执行报告与合并校验摘要",
+    "处理超时、失败、资源超限等异常状态"
+  ],
+  "workflow_steps": [
+    {
+      "id": "P01",
+      "action": "输入校验与任务列表解析",
+      "input": ["tasks", "roles", "merge_validator", "timeout_seconds"],
+      "output": []
+    },
+    {
+      "id": "P02",
+      "action": "依赖关系判定",
+      "input": ["tasks"],
+      "output": []
+    },
+    {
+      "id": "P03",
+      "action": "拒绝依赖任务并告警",
+      "input": ["依赖判定结果"],
+      "output": ["error_report.json"],
+      "trigger": {
+        "type": "conditional",
+        "condition": "存在任务间前后依赖"
+      }
+    },
+    {
+      "id": "P04",
+      "action": "按角色分组并行启动子 Agent",
+      "input": ["tasks", "roles", "timeout_seconds"],
+      "output": []
+    },
+    {
+      "id": "P05",
+      "action": "通过内存事件回调收集子 Agent 结果",
+      "input": ["子 Agent 执行事件"],
+      "output": []
+    },
+    {
+      "id": "P06",
+      "action": "调用 merge_validator 统一合并校验",
+      "input": ["子 Agent 结果集合"],
+      "output": []
+    },
+    {
+      "id": "P07",
+      "action": "输出并行执行报告",
+      "input": ["子 Agent 结果集合", "merge_validator 校验结论"],
+      "output": ["parallel_execution_report.json"]
+    },
+    {
+      "id": "P08",
+      "action": "输出合并校验摘要",
+      "input": ["merge_validator 校验结论"],
+      "output": ["merged_validation_summary.md"]
+    }
+  ],
+  "output_spec": {
+    "parallel_execution_report.json": {
+      "source": "子 Agent 执行结果与状态",
+      "content": ["task_id", "role", "status", "output_files", "elapsed_ms", "error_info"],
+      "consumers": ["pm", "merge_validator", "test_supervisor"]
+    },
+    "merged_validation_summary.md": {
+      "source": "merge_validator 校验结论",
+      "content": ["overall_status", "per_task_verdict", "conflicts", "open_issues", "next_steps"],
+      "consumers": ["pm", "acceptance_manager"]
+    },
+    "error_report.json": {
+      "source": "依赖判定失败结果",
+      "content": ["error_code", "message", "dependent_tasks"],
+      "consumers": ["pm"]
+    }
+  }
+}
