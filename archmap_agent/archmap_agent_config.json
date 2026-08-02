@@ -1,10 +1,10 @@
 {
   "name": "archmap_agent",
   "type": "architecture_mapping",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identity": {
-    "role": "全量/增量代码架构分析专用 Agent",
-    "purpose": "扫描项目目录、解析模块边界、生成基线或基于 Diff 做增量影响面分析",
+    "role": "全量/增量/同步代码架构分析专用 Agent",
+    "purpose": "扫描项目目录、解析模块边界、生成基线资产、基于需求文本做增量影响面分析、基于代码变更同步更新基线",
     "downstream": ["pm", "frontend", "backend", "test", "rag_kb"]
   },
   "input_schema": {
@@ -16,10 +16,10 @@
     "mode": {
       "type": "enum",
       "required": true,
-      "options": ["baseline", "incremental"],
-      "description": "baseline=基线全量测绘, incremental=增量Diff测绘"
+      "options": ["baseline", "incremental", "sync"],
+      "description": "baseline=基线全量测绘, incremental=基于需求文本的增量影响面分析, sync=基于代码变更同步更新基线"
     },
-    "diff_doc": {
+    "requirement_text": {
       "type": "string",
       "required": {
         "type": "conditional",
@@ -29,29 +29,25 @@
           "value": "incremental"
         }
       },
-      "description": "变更 Diff 文档路径或内容"
-    },
-    "requirement_text": {
-      "type": "string",
-      "required": false,
-      "description": "需求文本，增量分析时用于定位相关模块"
+      "description": "需求文本，增量影响面分析时用于定位相关模块"
     },
     "output_dir": {
       "type": "string",
       "required": false,
-      "default": "{project_path}/archmap/",
-      "description": "输出目录，默认落在项目根下 archmap/"
+      "default": "{project_path}/.archmap/{project_name}/",
+      "description": "输出目录，默认落在项目根下 .archmap/<项目名>/"
     }
   },
   "rules": {
-    "output_location": "输出目录直接落在 {project_path}/archmap/，不嵌套隐藏目录或项目名子目录",
+    "output_location": "输出目录直接落在 {project_path}/.archmap/{project_name}/，不嵌套隐藏目录或项目名子目录",
     "baseline_behavior": "基线模式首次完整扫描项目代码，生成全套架构资产",
-    "incremental_behavior": "增量模式仅读取变更 Diff 文档，不全局扫描代码，基于已有资产局部更新",
+    "incremental_behavior": "增量模式基于需求文本与已有基线做向量相似度匹配，定位受影响模块，仅对命中模块做模块内精准定位",
+    "sync_behavior": "同步模式检测当前源码与上次基线的 SHA256 内容指纹差异，仅重新解析新增/修改模块，并支持 recall 验证",
     "no_snapshot": "禁止引入快照、回滚、增量日志、版本恢复等非业务概念",
     "filter_policy": "文件过滤必须覆盖黑名单、扩展名、大小、相关性截断、中文词映射",
     "edit_safety": "编辑已有文件前必须精确读取目标块，避免 old_string 不匹配",
     "task_sync": "任何工具调用完成后必须先 TaskUpdate 再下一步",
-    "dependency_check": "增量模式下若 full_index.json 缺失必须报错并要求先执行 baseline"
+    "dependency_check": "增量/同步模式下若 full_index.json 缺失必须报错并要求先执行 baseline"
   },
   "capabilities": [
     "全量扫描项目源码、配置、依赖文件",
@@ -62,21 +58,23 @@
     "生成架构图、数据链路图、时序图文本描述",
     "计算文件与模块内容哈希",
     "生成模块/API/存储资产的向量缓存",
-    "基于 Diff 定位受影响范围并输出 precise_analysis",
+    "基于需求文本向量相似度定位受影响范围并输出 precise_analysis",
+    "基于需求路由关键词硬匹配与路由供需闭包做召回补强",
+    "基于代码变更同步更新基线并生成 recall_report",
     "校验输出资产完整性与粒度一致性"
   ],
   "workflow_steps": [
     {
       "id": "S01",
-      "mode": ["baseline", "incremental"],
+      "mode": ["baseline"],
       "action": "输入校验与目录准备",
-      "input": ["project_path", "mode", "diff_doc", "output_dir"],
+      "input": ["project_path", "mode", "output_dir"],
       "output": []
     },
     {
       "id": "S02",
-      "mode": ["baseline", "incremental"],
-      "action": "根据 mode 进入基线或增量分支",
+      "mode": ["baseline"],
+      "action": "进入基线分支",
       "input": ["mode"],
       "output": []
     },
@@ -167,120 +165,97 @@
     {
       "id": "I03",
       "mode": ["incremental"],
-      "action": "读取并解析 Diff 文档",
-      "input": ["diff_doc", "requirement_text"],
+      "action": "读取需求文本并加载已有基线资产",
+      "input": ["requirement_text", "full_index.json", "vector_cache.json", "module_hashes.json"],
       "output": []
     },
     {
       "id": "I04",
       "mode": ["incremental"],
-      "action": "加载已有资产",
-      "input": ["01_执行摘要.md", "05_模块资产清单.md", "06_API资产清单.md", "07_存储资产清单.md", "08_依赖矩阵.md", "module_hashes.json", "vector_cache.json"],
+      "action": "同步源码实际变更并识别变更模块",
+      "input": ["project_path", "module_hashes.json"],
       "output": []
     },
     {
       "id": "I05",
       "mode": ["incremental"],
-      "action": "定位受影响范围",
-      "input": ["Diff 解析结果", "已有资产"],
-      "output": ["precise_analysis.json"]
+      "action": "向量相似度匹配需求与最新模块向量",
+      "input": ["requirement_text", "vector_cache.json"],
+      "output": []
     },
     {
       "id": "I06",
       "mode": ["incremental"],
-      "action": "更新模块资产",
-      "input": ["precise_analysis.json", "05_模块资产清单.md"],
-      "output": ["05_模块资产清单.md"]
+      "action": "召回补强：路由供需闭包与需求路由关键词硬匹配",
+      "input": ["requirement_text", "已有资产"],
+      "output": []
     },
     {
       "id": "I07",
       "mode": ["incremental"],
-      "action": "更新 API 资产",
-      "input": ["precise_analysis.json", "06_API资产清单.md"],
-      "output": ["06_API资产清单.md"]
+      "action": "模块内精准定位：文件、函数/类、接口路由、路由→文件映射",
+      "input": ["命中模块", "需求关键词"],
+      "output": ["precise_analysis.json"]
     },
     {
       "id": "I08",
       "mode": ["incremental"],
-      "action": "更新存储资产",
-      "input": ["precise_analysis.json", "07_存储资产清单.md"],
-      "output": ["07_存储资产清单.md"]
+      "action": "合并更新基线并生成 precise_meta.json",
+      "input": ["precise_analysis.json"],
+      "output": ["precise_meta.json"]
     },
     {
       "id": "I09",
       "mode": ["incremental"],
-      "action": "更新依赖矩阵",
-      "input": ["precise_analysis.json", "08_依赖矩阵.md", "05_模块资产清单.md"],
-      "output": ["08_依赖矩阵.md"]
+      "action": "输出受影响模块、API、存储、涉及文件清单",
+      "input": ["precise_analysis.json"],
+      "output": []
     },
     {
-      "id": "I10",
-      "mode": ["incremental"],
-      "action": "重新生成架构图",
-      "input": ["05_模块资产清单.md", "08_依赖矩阵.md"],
-      "output": ["02_架构图.md"],
+      "id": "Y01",
+      "mode": ["sync"],
+      "action": "加载已有基线资产",
+      "input": ["full_index.json", "vector_cache.json", "module_hashes.json"],
+      "output": []
+    },
+    {
+      "id": "Y02",
+      "mode": ["sync"],
+      "action": "对比当前源码与模块内容指纹，识别新增/修改/删除模块",
+      "input": ["project_path", "module_hashes.json"],
+      "output": []
+    },
+    {
+      "id": "Y03",
+      "mode": ["sync"],
+      "action": "仅重新解析新增/修改模块，未变更模块复用基线",
+      "input": ["变更模块集合"],
+      "output": ["05_模块资产清单.md", "06_API资产清单.md", "07_存储资产清单.md", "08_依赖矩阵.md"]
+    },
+    {
+      "id": "Y04",
+      "mode": ["sync"],
+      "action": "从基线移除已删除模块及其向量",
+      "input": ["已删除模块集合"],
+      "output": ["full_index.json", "vector_cache.json"]
+    },
+    {
+      "id": "Y05",
+      "mode": ["sync"],
+      "action": "重新生成 Mermaid 图表与 01~09 报告",
+      "input": ["更新后的资产清单"],
+      "output": ["01_执行摘要.md", "02_架构图.md", "03_数据链路图.md", "04_时序图.md", "09_粒度校验报告.md"]
+    },
+    {
+      "id": "Y06",
+      "mode": ["sync"],
+      "action": "recall 验证：比对 precise_analysis 预测与本次实际变更",
+      "input": ["precise_analysis.json", "precise_meta.json", "实际变更模块"],
+      "output": ["recall_report.json", "recall_history.jsonl"],
       "trigger": {
         "type": "conditional",
-        "condition": "precise_analysis.json 中 affected_modules 非空 或 affected_dependencies 非空"
+        "condition": "precise_analysis.json 与 precise_meta.json 存在且基线哈希指纹一致"
       }
-    },
-    {
-      "id": "I11",
-      "mode": ["incremental"],
-      "action": "重新生成数据链路图",
-      "input": ["06_API资产清单.md", "07_存储资产清单.md", "08_依赖矩阵.md"],
-      "output": ["03_数据链路图.md"],
-      "trigger": {
-        "type": "conditional",
-        "condition": "precise_analysis.json 中 affected_apis 非空 或 affected_storage 非空"
-      }
-    },
-    {
-      "id": "I12",
-      "mode": ["incremental"],
-      "action": "重新生成时序图",
-      "input": ["06_API资产清单.md", "08_依赖矩阵.md"],
-      "output": ["04_时序图.md"],
-      "trigger": {
-        "type": "conditional",
-        "condition": "precise_analysis.json 中 affected_apis 非空 且涉及核心调用链变化"
-      }
-    },
-    {
-      "id": "I13",
-      "mode": ["incremental"],
-      "action": "更新模块哈希",
-      "input": ["module_hashes.json", "diff_doc"],
-      "output": ["module_hashes.json"],
-      "trigger": {
-        "type": "incremental",
-        "scope": "diff_doc 中新增、修改、删除的文件"
-      }
-    },
-    {
-      "id": "I14",
-      "mode": ["incremental"],
-      "action": "更新向量缓存",
-      "input": ["vector_cache.json", "05_模块资产清单.md", "06_API资产清单.md", "07_存储资产清单.md"],
-      "output": ["vector_cache.json"],
-      "trigger": {
-        "type": "incremental",
-        "scope": "05/06/07_资产清单中新增或修改的条目"
-      }
-    },
-    {
-      "id": "I15",
-      "mode": ["incremental"],
-      "action": "重新校验",
-      "input": ["全部已更新 Markdown 与 JSON"],
-      "output": ["09_粒度校验报告.md"]
-    },
-    {
-      "id": "I16",
-      "mode": ["incremental"],
-      "action": "更新执行摘要",
-      "input": ["全部已更新 Markdown 与 JSON"],
-      "output": ["01_执行摘要.md"]
     }
   ],
   "output_spec": {
@@ -289,58 +264,63 @@
       "content": ["测绘模式", "输入参数", "统计信息", "输出文件清单", "变更摘要"],
       "baseline": "generate",
       "incremental": "regenerate",
+      "sync": "regenerate",
       "consumers": ["pm", "test_supervisor", "acceptance_manager"]
     },
     "02_架构图.md": {
       "source": "05_模块资产清单.md, 08_依赖矩阵.md",
       "content": ["模块分层拓扑", "组件关系", "边界划分", "文本/Mermaid 描述"],
       "baseline": "generate",
-      "incremental": "conditional_regenerate",
-      "incremental_condition": "precise_analysis.json 中 affected_modules 非空 或 affected_dependencies 非空",
+      "incremental": "reuse",
+      "sync": "regenerate",
       "consumers": ["pm", "frontend", "backend", "ui_designer"]
     },
     "03_数据链路图.md": {
       "source": "06_API资产清单.md, 07_存储资产清单.md, 08_依赖矩阵.md",
       "content": ["请求入口", "下游服务", "数据库", "缓存", "外部接口", "数据流向"],
       "baseline": "generate",
-      "incremental": "conditional_regenerate",
-      "incremental_condition": "precise_analysis.json 中 affected_apis 非空 或 affected_storage 非空",
+      "incremental": "reuse",
+      "sync": "regenerate",
       "consumers": ["backend", "test", "data_engineer"]
     },
     "04_时序图.md": {
       "source": "06_API资产清单.md, 08_依赖矩阵.md",
       "content": ["核心操作", "模块交互", "调用顺序", "文本/Mermaid 时序图"],
       "baseline": "generate",
-      "incremental": "conditional_regenerate",
-      "incremental_condition": "precise_analysis.json 中 affected_apis 非空 且涉及核心调用链变化",
+      "incremental": "reuse",
+      "sync": "regenerate",
       "consumers": ["backend", "test", "pm"]
     },
     "05_模块资产清单.md": {
       "source": "full_index.json",
       "content": ["模块名称", "职责", "入口文件", "导出内容", "层级", "命名空间"],
       "baseline": "generate",
-      "incremental": "regenerate",
+      "incremental": "reuse",
+      "sync": "incremental_update",
       "consumers": ["02_架构图.md", "03_数据链路图.md", "04_时序图.md", "08_依赖矩阵.md", "precise_analysis.json"]
     },
     "06_API资产清单.md": {
       "source": "full_index.json, 05_模块资产清单.md",
       "content": ["接口方法", "路径", "参数", "返回值", "所属模块", "调用方"],
       "baseline": "generate",
-      "incremental": "regenerate",
+      "incremental": "reuse",
+      "sync": "incremental_update",
       "consumers": ["03_数据链路图.md", "04_时序图.md", "08_依赖矩阵.md", "precise_analysis.json"]
     },
     "07_存储资产清单.md": {
       "source": "full_index.json, 05_模块资产清单.md",
       "content": ["表名", "字段", "索引", "关联关系", "缓存 key 结构", "存储类型"],
       "baseline": "generate",
-      "incremental": "regenerate",
+      "incremental": "reuse",
+      "sync": "incremental_update",
       "consumers": ["03_数据链路图.md", "08_依赖矩阵.md", "precise_analysis.json"]
     },
     "08_依赖矩阵.md": {
       "source": "full_index.json, 05_模块资产清单.md",
       "content": ["模块间调用关系", "文件间调用关系", "依赖方向", "耦合度"],
       "baseline": "generate",
-      "incremental": "regenerate",
+      "incremental": "reuse",
+      "sync": "incremental_update",
       "consumers": ["02_架构图.md", "03_数据链路图.md", "04_时序图.md", "09_粒度校验报告.md"]
     },
     "09_粒度校验报告.md": {
@@ -348,6 +328,7 @@
       "content": ["必填字段检查", "数量一致性", "依赖矩阵覆盖度", "问题清单"],
       "baseline": "generate",
       "incremental": "regenerate",
+      "sync": "regenerate",
       "consumers": ["pm", "test_supervisor", "acceptance_manager"]
     },
     "full_index.json": {
@@ -355,38 +336,68 @@
       "content": ["文件路径", "扩展名", "大小", "修改时间", "哈希"],
       "baseline": "generate",
       "incremental": "reuse",
-      "consumers": ["基线步骤 S03-S07", "增量步骤 I04"]
+      "sync": "incremental_update",
+      "consumers": ["基线步骤 S03-S07", "增量步骤 I03", "同步步骤 Y01-Y04"]
     },
     "module_hashes.json": {
       "source": "full_index.json",
       "content": ["文件路径", "内容哈希", "模块聚合哈希"],
       "baseline": "generate",
-      "incremental": "incremental_update",
-      "incremental_scope": "diff_doc 中新增、修改、删除的文件",
-      "consumers": ["增量模式比对步骤", "外部同步工具"]
+      "incremental": "reuse",
+      "sync": "incremental_update",
+      "consumers": ["增量模式比对步骤", "同步模式变更检测"]
     },
     "precise_analysis.json": {
-      "source": "diff_doc, requirement_text, 已有资产",
-      "content": ["受影响模块", "受影响 API", "受影响数据表", "受影响前端资源", "影响等级"],
+      "source": "requirement_text, 已有资产",
+      "content": ["受影响模块", "受影响 API", "受影响数据表", "涉及文件", "命中来源 match_sources"],
       "baseline": "skip",
       "incremental": "generate",
+      "sync": "reuse",
       "consumers": ["pm", "frontend", "backend", "test", "shard_mother_child_agent"]
+    },
+    "precise_meta.json": {
+      "source": "requirement_text, precise_analysis.json",
+      "content": ["需求文本", "命中来源", "基线哈希指纹"],
+      "baseline": "skip",
+      "incremental": "generate",
+      "sync": "reuse",
+      "consumers": ["sync 模式 recall 验证"]
+    },
+    "recall_report.json": {
+      "source": "precise_meta.json, 实际变更模块",
+      "content": ["命中率", "漏报模块", "归因"],
+      "baseline": "skip",
+      "incremental": "skip",
+      "sync": "conditional_generate",
+      "sync_condition": "precise_analysis.json 与 precise_meta.json 存在且基线哈希一致且存在实际变更",
+      "consumers": ["pm", "test_supervisor"]
+    },
+    "recall_history.jsonl": {
+      "source": "历次 recall_report.json",
+      "content": ["时间戳", "命中率", "漏报模块", "归因"],
+      "baseline": "skip",
+      "incremental": "skip",
+      "sync": "conditional_generate",
+      "sync_condition": "同 recall_report.json",
+      "consumers": ["质量审计"]
     },
     "vector_cache.json": {
       "source": "05_模块资产清单.md, 06_API资产清单.md, 07_存储资产清单.md",
       "content": ["文本切片", "embedding 向量", "id", "元数据"],
       "baseline": "generate",
-      "incremental": "incremental_update",
-      "incremental_scope": "05/06/07_资产清单中新增或修改的条目",
+      "incremental": "reuse",
+      "sync": "incremental_update",
+      "incremental_scope": "sync 模式下 05/06/07_资产清单新增或修改条目",
       "consumers": ["rag_kb", "similarity_search_tool"]
     }
   },
   "generation_strategy_enum": {
     "generate": "在基线模式下从头生成该文件",
-    "regenerate": "在增量模式下完全重新生成该文件",
-    "conditional_regenerate": "在增量模式下满足条件时重新生成，否则复用旧文件",
-    "reuse": "在增量模式下直接复用基线生成的旧文件",
-    "incremental_update": "在增量模式下仅更新变更部分，保留未变更内容",
+    "regenerate": "在增量/同步模式下完全重新生成该文件",
+    "conditional_generate": "在满足条件时生成，否则不生成",
+    "conditional_regenerate": "在满足条件时重新生成，否则复用旧文件",
+    "reuse": "在增量/同步模式下直接复用基线生成的旧文件",
+    "incremental_update": "在同步模式下仅更新变更部分，保留未变更内容",
     "skip": "在当前模式下不生成该文件"
   }
 }
